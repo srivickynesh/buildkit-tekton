@@ -46,10 +46,42 @@ func PipelineRunToLLB(ctx context.Context, c client.Client, r PipelineRun) (llb.
 	}
 
 	// Execution
+	// FIXME(vdemeester) transform this map into a map of func…
+	// So that in TaskRun, we call mounts = append(mounts, workspace(stepStates[i]))
 	pipelineWorkspaces := map[string]llb.MountOption{}
-	for _, w := range spec.Workspaces {
-		pipelineWorkspaces[w.Name] = llb.AsPersistentCacheDir(pr.Name+"/"+w.Name, llb.CacheMountShared)
+	for _, w := range pr.Spec.Workspaces {
+		fmt.Println(w)
+		switch {
+		case w.ConfigMap != nil:
+			// Create a file with the content
+			configmap, ok := r.configs[w.ConfigMap.Name]
+			if !ok {
+				return llb.State{}, errors.Errorf("Configmap %s not found in context", w.ConfigMap.Name)
+			}
+			// Create the llb
+			configmapState := llb.Scratch().Dir("/")
+			for _, item := range w.ConfigMap.Items {
+				data, ok := configmap.Data[item.Key]
+				if !ok {
+					return llb.State{}, errors.Errorf("key %s from configmap %s not found in context", item.Key, w.ConfigMap.Name)
+				}
+				configmapState = configmapState.File(
+					llb.Mkfile(item.Path, 0755, []byte(data)),
+					llb.WithCustomName("[tekton] configmap "+configmap.Name+"/"+item.Key+": preparing file"),
+				)
+			}
+		case w.Secret != nil:
+			// Create a file with the content
+			// Create the llb
+		case w.EmptyDir != nil ||
+			w.VolumeClaimTemplate != nil ||
+			w.PersistentVolumeClaim != nil:
+			pipelineWorkspaces[w.Name] = llb.AsPersistentCacheDir(pr.Name+"/"+w.Name, llb.CacheMountShared)
+		}
 	}
+	// for _, w := range spec.Workspaces {
+	// 	pipelineWorkspaces[w.Name] = llb.AsPersistentCacheDir(pr.Name+"/"+w.Name, llb.CacheMountShared)
+	// }
 	tasks := map[string][]llb.State{}
 	for _, t := range spec.Tasks {
 		var ts v1beta1.TaskSpec
@@ -82,6 +114,7 @@ func PipelineRunToLLB(ctx context.Context, c client.Client, r PipelineRun) (llb.
 			return llb.State{}, errors.Wrapf(err, "variable interpolation failed for %s", t.Name)
 		}
 
+		// FIXME(vdemeester) do the same here
 		taskWorkspaces := map[string]llb.MountOption{}
 		for _, w := range t.Workspaces {
 			taskWorkspaces["/workspace/"+w.Name] = pipelineWorkspaces[w.Workspace]
